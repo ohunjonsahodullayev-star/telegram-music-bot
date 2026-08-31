@@ -79,7 +79,7 @@ def _find_ffmpeg_dir() -> Optional[str]:
 
 
 def _get_base_ydl_opts() -> dict:
-    """Asosiy umumiy yt-dlp parametrlarini qaytaradi."""
+    """Asosiy umumiy yt-dlp parametrlarini qaytaradi (Cloud Serverlar va YouTube anti-bot cheklovlarini aylanib o'tuvchi)."""
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -98,7 +98,7 @@ def _get_base_ydl_opts() -> dict:
         },
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"],
+                "player_client": ["ios", "android", "mweb"],
             }
         },
     }
@@ -111,14 +111,6 @@ def _get_base_ydl_opts() -> dict:
 def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> MediaResult:
     """
     Sinxron ravishda videoni (MP4) va audioni (MP3) yuklab oladi.
-
-    Args:
-        url (str): Instagram yoki YouTube havolasi.
-        output_dir (str): Vaqtinchalik katalog.
-        max_size_mb (int): Ruxsat etilgan maksimal hajm (MB).
-
-    Returns:
-        MediaResult: Audio va Video fayllar manzili bilan.
     """
     if yt_dlp is None:
         raise DownloaderException("yt-dlp kutubxonasi tizimda topilmadi.")
@@ -151,7 +143,6 @@ def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> Me
 
     try:
         logger.info("Videoni yuklash boshlandi: %s", url)
-        # Avval videoni yuklaymiz
         try:
             with yt_dlp.YoutubeDL(video_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -159,7 +150,6 @@ def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> Me
                     result.title = info.get("title")
                     result.duration = info.get("duration")
 
-            # Video faylni topish
             video_files = [
                 f for f in glob.glob(os.path.join(output_dir, "video.*"))
                 if not f.endswith(".mp3")
@@ -173,14 +163,12 @@ def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> Me
         except Exception as vid_err:
             logger.warning("Videoni yuklashda xatolik (audio baribir yuklanadi): %s", vid_err)
 
-        # Endi toza MP3 audioni yuklaymiz
         logger.info("Audioni yuklash boshlandi: %s", url)
         with yt_dlp.YoutubeDL(audio_opts) as ydl:
             ydl.download([url])
 
         mp3_files = glob.glob(os.path.join(output_dir, "audio_*.mp3"))
         if not mp3_files:
-            # Agar audio_*.mp3 topilmasa, istalgan mp3 ni qidiramiz
             mp3_files = glob.glob(os.path.join(output_dir, "*.mp3"))
 
         if not mp3_files:
@@ -203,15 +191,7 @@ def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> Me
 
 def _sync_search_and_download_audio(query: str, output_dir: str, max_size_mb: int = 50) -> Tuple[str, str]:
     """
-    YouTube qidiruvi orqali (masalan 'qo'shiq nomi remix') audioni qidirib MP3 formatda yuklaydi.
-
-    Args:
-        query (str): Qidiruv so'zi (masalan: 'Shape of You remix').
-        output_dir (str): Vaqtinchalik katalog.
-        max_size_mb (int): Maksimal hajm (MB).
-
-    Returns:
-        Tuple[str, str]: (audio_fayl_yo'li, video_nomi)
+    YouTube qidiruvi orqali audioni qidirib MP3 formatda yuklaydi.
     """
     if yt_dlp is None:
         raise DownloaderException("yt-dlp kutubxonasi topilmadi.")
@@ -291,7 +271,6 @@ async def search_and_download_audio(
         raise DownloaderTimeoutError(f"Qidiruv vaqti ({timeout_seconds}s) tugadi.") from exc
 
 
-# Orqaga moslik (Backward compatibility) uchun eski funksiya
 async def download_audio(
     url: str,
     output_dir: str,
