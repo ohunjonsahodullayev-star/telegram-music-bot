@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: telegram-music-bot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: MAX_AUDIO_SIZE_MB
+        value: "50"
+      - key: DOWNLOAD_TIMEOUT_SECONDS
+        value: "120"
+      - key: RECOGNITION_TIMEOUT_SECONDS
+        value: "30"
+      - key: LOG_LEVEL
+        value: "INFO"
