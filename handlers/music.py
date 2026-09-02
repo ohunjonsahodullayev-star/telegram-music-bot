@@ -7,6 +7,7 @@ Shazam orqali aniqlaydi hamda Remix/SpeedUp/Slowed variantlarini taqdim etadi.
 import html
 import logging
 import os
+import re
 import tempfile
 import uuid
 from typing import Dict, Optional, Tuple
@@ -35,6 +36,12 @@ music_router = Router(name="music_router")
 REMIX_CACHE: Dict[str, Tuple[str, str]] = {}
 
 
+def _sanitize_filename(name: str) -> str:
+    """Fayl nomi uchun xavfli belgilarni olib tashlaydi."""
+    clean = re.sub(r'[\\/*?:"<>|]', "", name).strip()
+    return clean[:60] if clean else "audio"
+
+
 def _create_remix_keyboard(track_name: str) -> InlineKeyboardMarkup:
     """Remix variantlari uchun Inline tugmalar."""
     key_remix = str(uuid.uuid4())[:8]
@@ -42,10 +49,11 @@ def _create_remix_keyboard(track_name: str) -> InlineKeyboardMarkup:
     key_slowed = str(uuid.uuid4())[:8]
     key_cover = str(uuid.uuid4())[:8]
 
-    REMIX_CACHE[key_remix] = (track_name, "remix")
-    REMIX_CACHE[key_speedup] = (track_name, "speed up")
-    REMIX_CACHE[key_slowed] = (track_name, "slowed reverb")
-    REMIX_CACHE[key_cover] = (track_name, "cover acoustic")
+    clean_track = track_name[:80]
+    REMIX_CACHE[key_remix] = (clean_track, "remix")
+    REMIX_CACHE[key_speedup] = (clean_track, "speed up")
+    REMIX_CACHE[key_slowed] = (clean_track, "slowed reverb")
+    REMIX_CACHE[key_cover] = (clean_track, "cover acoustic")
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -86,7 +94,7 @@ async def handle_music_link(message: Message, config: Config) -> None:
         tmpdir_obj = tempfile.TemporaryDirectory()
         tmpdir = tmpdir_obj.name
 
-        # 1. Video va audio yuklash
+        # 1. Video va audioni yuklash
         media: MediaResult = await download_media(
             url=url,
             output_dir=tmpdir,
@@ -94,7 +102,7 @@ async def handle_music_link(message: Message, config: Config) -> None:
             max_size_mb=config.max_audio_size_mb,
         )
 
-        if not media.audio_path:
+        if not media.audio_path or not os.path.exists(media.audio_path):
             raise DownloaderException("Audioni ajratib bo'lmadi.")
 
         # 2. Shazam orqali aniqlash
@@ -107,15 +115,20 @@ async def handle_music_link(message: Message, config: Config) -> None:
         # 3. Agar video mavjud bo'lsa, videoni yuborish
         if media.video_path and os.path.exists(media.video_path):
             await status_msg.edit_text("🎬 <i>Video yuborilmoqda...</i>", parse_mode=ParseMode.HTML)
-            video_caption = f"🎬 <b>Yuklab olingan video</b>\n🔗 <a href=\"{url}\">Asl havola</a>"
+            safe_url = html.escape(url, quote=True)
+            video_caption = f"🎬 <b>Yuklab olingan video</b>\n🔗 <a href=\"{safe_url}\">Asl havola</a>"
             try:
                 await message.answer_video(
                     video=FSInputFile(media.video_path),
                     caption=video_caption,
                     parse_mode=ParseMode.HTML,
                 )
-            except Exception as vid_send_err:
-                logger.warning("Video jo'natishda xabar: %s", vid_send_err)
+            except Exception as vid_err:
+                logger.warning("HTML caption bilan video jo'natishda xato: %s. Qayta yuborilmoqda...", vid_err)
+                try:
+                    await message.answer_video(video=FSInputFile(media.video_path))
+                except Exception as vid_err2:
+                    logger.error("Video jo'natib bo'lmadi: %s", vid_err2)
 
         # 4. Audio faylni jo'natish
         await status_msg.edit_text("🎧 <i>Audio fayl tayyorlanmoqda...</i>", parse_mode=ParseMode.HTML)
@@ -131,25 +144,34 @@ async def handle_music_link(message: Message, config: Config) -> None:
             search_base = f"{track_info.subtitle} {track_info.title}"
         else:
             title_name = media.title or "Audio Track"
+            clean_title_html = html.escape(title_name)
             caption = (
-                "⚠️ <i>Qo'shiq nomi Shazam orqali aniqlanmadi, lekin audio yuklab olindi.</i>\n\n"
+                f"🎵 Nomi: <b>{clean_title_html}</b>\n\n"
                 f"👇 <i>Boshqa variantlarini yuklash uchun bosing:</i>"
             )
             title = title_name
-            performer = "Instagram / YouTube"
+            performer = "YouTube / Instagram"
             search_base = title_name
 
-        audio_file = FSInputFile(path=media.audio_path, filename=f"{title}.mp3")
+        safe_filename = f"{_sanitize_filename(title)}.mp3"
+        audio_file = FSInputFile(path=media.audio_path, filename=safe_filename)
         remix_keyboard = _create_remix_keyboard(search_base)
 
-        await message.answer_audio(
-            audio=audio_file,
-            caption=caption,
-            title=title,
-            performer=performer,
-            reply_markup=remix_keyboard,
-            parse_mode=ParseMode.HTML,
-        )
+        try:
+            await message.answer_audio(
+                audio=audio_file,
+                caption=caption,
+                title=title[:60],
+                performer=performer[:60],
+                reply_markup=remix_keyboard,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as audio_send_err:
+            logger.warning("Audio yuborishda xatolik: %s. Oddiy rejimda yuborilmoqda...", audio_send_err)
+            await message.answer_audio(
+                audio=FSInputFile(path=media.audio_path, filename="audio.mp3"),
+                reply_markup=remix_keyboard,
+            )
 
         try:
             await status_msg.delete()
@@ -167,7 +189,7 @@ async def handle_music_link(message: Message, config: Config) -> None:
         await status_msg.edit_text(f"❌ <b>Yuklab olishda xatolik:</b>\n<code>{html.escape(err_text)}</code>", parse_mode=ParseMode.HTML)
     except Exception as exc:
         logger.error("Kutilmagan xatolik: %s", exc, exc_info=True)
-        await status_msg.edit_text("⚠️ <b>Texnik xatolik yuz berdi. Qayta urinib ko'ring.</b>", parse_mode=ParseMode.HTML)
+        await status_msg.edit_text(f"⚠️ <b>Yuklab olishda xatolik yuz berdi:</b>\n<code>{html.escape(str(exc))}</code>", parse_mode=ParseMode.HTML)
     finally:
         if tmpdir_obj is not None:
             try:
@@ -202,16 +224,23 @@ async def handle_remix_callback(callback: CallbackQuery, config: Config) -> None
             max_size_mb=config.max_audio_size_mb,
         )
 
-        audio_file = FSInputFile(path=audio_path, filename=f"{video_title}.mp3")
-        caption = f"🎵 <b>{html.escape(video_title)}</b>\n⚡ Variant: <b>{variant.title()}</b>"
+        safe_filename = f"{_sanitize_filename(video_title)}.mp3"
+        audio_file = FSInputFile(path=audio_path, filename=safe_filename)
+        caption = f"🎵 <b>{html.escape(video_title)}</b>\n⚡ Variant: <b>{html.escape(variant.title())}</b>"
 
-        await callback.message.reply_audio(
-            audio=audio_file,
-            caption=caption,
-            title=video_title,
-            performer=variant.title(),
-            parse_mode=ParseMode.HTML,
-        )
+        try:
+            await callback.message.reply_audio(
+                audio=audio_file,
+                caption=caption,
+                title=video_title[:60],
+                performer=variant.title()[:60],
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as remix_send_err:
+            logger.warning("Remix audio yuborishda xato: %s. Oddiy rejimda yuborilmoqda...", remix_send_err)
+            await callback.message.reply_audio(
+                audio=FSInputFile(path=audio_path, filename="remix.mp3"),
+            )
 
         try:
             await status_msg.delete()
