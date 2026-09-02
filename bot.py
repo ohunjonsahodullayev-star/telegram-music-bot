@@ -1,6 +1,6 @@
 """
 Telegram Musiqa Aniqlovchi Botning asosiy ishga tushirish fayli (main entrypoint).
-Dispatcher, Bot obyektlari, handler routerlari va Render.com uchun Health Check veb-serverini o'z ichiga oladi.
+Dispatcher, Bot obyektlari, handler routerlari, Health Check veb-serveri va 24/7 Keep-Alive tizimini o'z ichiga oladi.
 """
 
 import asyncio
@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 
+import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -39,6 +40,26 @@ async def start_health_check_server(port: int = 8080) -> None:
         logger.warning("Veb-serverni ishga tushirishda ogohlantirish: %s", err)
 
 
+async def keep_alive_ping_loop(service_url: str, interval_seconds: int = 600) -> None:
+    """
+    Render.com bepul tarifida server 15 daqiqada uxlab qolmasligi uchun
+    har 10 daqiqada o'ziga avtomatik ping yuborib turuvchi fon vazifasi.
+    """
+    if not service_url:
+        return
+    logger.info("Keep-Alive ping xizmati faollashdi: %s (Har %d soniyada)", service_url, interval_seconds)
+    await asyncio.sleep(60)  # Ishga tushgandan 1 daqiqa o'tib boshlaydi
+
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(service_url, timeout=30) as resp:
+                    logger.info("Keep-Alive ping yuborildi (Status: %s)", resp.status)
+        except Exception as exc:
+            logger.warning("Keep-Alive ping xatosi: %s", exc)
+        await asyncio.sleep(interval_seconds)
+
+
 async def main() -> None:
     """Botni ishga tushiruvchi asosiy asinxron funksiya."""
     # 1. Konfiguratsiyani yuklash
@@ -56,35 +77,43 @@ async def main() -> None:
     port = int(os.getenv("PORT", "8080"))
     await start_health_check_server(port)
 
-    # 4. Bot va Dispatcher obyektlarini yaratish
+    # 4. Server uxlab qolmasligi uchun Keep-Alive self-ping ishga tushirish
+    service_url = (
+        os.getenv("RENDER_EXTERNAL_URL")
+        or os.getenv("SERVICE_URL")
+        or "https://telegram-music-bot-4ht5.onrender.com"
+    )
+    asyncio.create_task(keep_alive_ping_loop(service_url, interval_seconds=600))
+
+    # 5. Bot va Dispatcher obyektlarini yaratish
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
-
     dp["config"] = config
 
-    # 5. Routerlarni ro'yxatdan o'tkazish
+    # 6. Routerlarni ro'yxatdan o'tkazish
     dp.include_router(start_router)
     dp.include_router(music_router)
 
-    # 6. Pollingni ishga tushirish
+    # 7. Uzluksiz Pollingni ishga tushirish (avtomatik qayta ulanish bilan)
+    logger.info("Eski kutilayotgan xabarlar tozalanmoqda...")
     try:
-        logger.info("Eski kutilayotgan xabarlar tozalanmoqda...")
         await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as webhook_err:
+        logger.warning("Webhook tozalashda ogohlantirish: %s", webhook_err)
 
-        bot_user = await bot.get_me()
-        logger.info("Bot muvaffaqiyatli ishga tushdi: @%s (%s)", bot_user.username, bot_user.first_name)
-        logger.info("Polling boshlanmoqda...")
+    bot_user = await bot.get_me()
+    logger.info("Bot muvaffaqiyatli ishga tushdi: @%s (%s)", bot_user.username, bot_user.first_name)
+    logger.info("Polling boshlanmoqda...")
 
-        await dp.start_polling(bot)
-    except Exception as exc:
-        logger.critical("Bot ishlashida jiddiy xatolik: %s", exc, exc_info=True)
-    finally:
-        logger.info("Bot sessiyasi yopilmoqda...")
-        await bot.session.close()
-        logger.info("Bot to'xtatildi.")
+    while True:
+        try:
+            await dp.start_polling(bot)
+        except Exception as exc:
+            logger.error("Polling uzildi: %s. 3 soniyadan so'ng qayta ulanadi...", exc, exc_info=True)
+            await asyncio.sleep(3)
 
 
 if __name__ == "__main__":
