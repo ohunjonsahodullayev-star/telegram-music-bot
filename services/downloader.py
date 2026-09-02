@@ -89,9 +89,8 @@ def _get_base_ydl_opts() -> dict:
     if ffmpeg_dir:
         opts["ffmpeg_location"] = ffmpeg_dir
 
-    node_bin = shutil.which("node")
-    if node_bin:
-        opts["js_runtimes"] = {"node": node_bin}
+    if shutil.which("node"):
+        opts["js_runtimes"] = {"node": {}}
 
     return opts
 
