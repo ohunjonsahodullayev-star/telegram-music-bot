@@ -78,8 +78,12 @@ def _find_ffmpeg_dir() -> Optional[str]:
     return None
 
 
-def _get_base_ydl_opts() -> dict:
-    """Asosiy umumiy yt-dlp parametrlarini qaytaradi (Cloud Serverlar va YouTube anti-bot cheklovlarini aylanib o'tuvchi)."""
+def _get_base_ydl_opts(client_type: str = "android") -> dict:
+    """
+    Asosiy umumiy yt-dlp parametrlarini qaytaradi.
+    YouTube'ning datacenter/bot cheklovlarini aylanib o'tish uchun Android/Mobile clientlari qo'llanadi.
+    """
+    client_list = ["android", "android_creator", "mweb", "ios"] if client_type == "android" else ["android_creator", "tv_embedded", "ios"]
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -98,7 +102,8 @@ def _get_base_ydl_opts() -> dict:
         },
         "extractor_args": {
             "youtube": {
-                "player_client": ["ios", "android", "mweb"],
+                "player_client": client_list,
+                "player_skip": ["webpage", "configs"],
             }
         },
     }
@@ -119,16 +124,16 @@ def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> Me
 
     # 1. Video yuklab olish (MP4 formatda, maksimal 50MB)
     video_template = os.path.join(output_dir, "video.%(ext)s")
-    video_opts = _get_base_ydl_opts()
+    video_opts = _get_base_ydl_opts("android")
     video_opts.update({
-        "format": "best[ext=mp4][filesize<?50M]/best[filesize<?50M]/best",
+        "format": "best[ext=mp4][filesize<?50M]/best[filesize<?50M]/18/22/best",
         "outtmpl": video_template,
         "merge_output_format": "mp4",
     })
 
     # 2. Audio yuklab olish (MP3 192kbps)
     audio_template = os.path.join(output_dir, "audio_%(id)s.%(ext)s")
-    audio_opts = _get_base_ydl_opts()
+    audio_opts = _get_base_ydl_opts("android")
     audio_opts.update({
         "format": "bestaudio/best",
         "outtmpl": audio_template,
@@ -161,11 +166,32 @@ def _sync_download_media(url: str, output_dir: str, max_size_mb: int = 50) -> Me
                     result.video_path = v_path
                     logger.info("Video muvaffaqiyatli yuklandi: %s (%.2f MB)", v_path, v_size)
         except Exception as vid_err:
-            logger.warning("Videoni yuklashda xatolik (audio baribir yuklanadi): %s", vid_err)
+            logger.warning("Videoni yuklashda ogohlantirish (audio baribir yuklanadi): %s", vid_err)
 
         logger.info("Audioni yuklash boshlandi: %s", url)
-        with yt_dlp.YoutubeDL(audio_opts) as ydl:
-            ydl.download([url])
+        try:
+            with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                ydl.download([url])
+        except YtDlpDownloadError as audio_err:
+            # Agar birinchi urinishda bot blokirovkasi bo'lsa, zaxira client bilan qayta urinish
+            if "confirm you’re not a bot" in str(audio_err) or "sign in" in str(audio_err).lower():
+                logger.info("Zaxira extractor client bilan qayta urinilmoqda...")
+                fallback_opts = _get_base_ydl_opts("fallback")
+                fallback_opts.update({
+                    "format": "bestaudio/best",
+                    "outtmpl": audio_template,
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }
+                    ],
+                })
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl_fb:
+                    ydl_fb.download([url])
+            else:
+                raise
 
         mp3_files = glob.glob(os.path.join(output_dir, "audio_*.mp3"))
         if not mp3_files:
@@ -199,7 +225,7 @@ def _sync_search_and_download_audio(query: str, output_dir: str, max_size_mb: in
     search_query = f"ytsearch1:{query}"
     audio_template = os.path.join(output_dir, "remix_%(id)s.%(ext)s")
 
-    opts = _get_base_ydl_opts()
+    opts = _get_base_ydl_opts("android")
     opts.update({
         "format": "bestaudio/best",
         "outtmpl": audio_template,
